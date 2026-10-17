@@ -7,7 +7,7 @@ import io
 import math
 
 st.set_page_config(page_title="TECMIS Attendance Tracker", layout="wide")
-st.title("🎓 TECMIS Attendance Tracker")
+st.title(" TECMIS Attendance Tracker")
 st.info("💡 **Note:** Student usernames require the **'sc'** prefix (e.g., `sc5291`).")
 
 # --- CONFIGURATION ---
@@ -26,11 +26,11 @@ with col1:
 with col2:
     pwd = st.text_input("Password", type="password")
 
-if st.button("🔐 Login & Fetch All Attendance", type="primary"):
+if st.button(" Login & Fetch All Attendance", type="primary"):
     if not user or not pwd:
         st.error("Please enter both username and password.")
     else:
-        with st.spinner("Authenticating... (This may take up to 30 seconds)"):
+        with st.spinner("Authenticating..."):
             try:
                 session = requests.Session()
                 session.headers.update({
@@ -38,22 +38,21 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 })
 
-                # FIX: Increased timeout from 10 to 30 seconds
-                session.get(BASE_URL, verify=True, timeout=30)
+                session.get(BASE_URL, verify=True, timeout=10)
                 payload = {FIELD_USERNAME: user, FIELD_PASSWORD: pwd}
-                post_response = session.post(LOGIN_URL, data=payload, verify=True, timeout=30)
+                post_response = session.post(LOGIN_URL, data=payload, verify=True, timeout=10)
 
                 if "Sign In" in post_response.text and 'name="uname"' in post_response.text:
                     st.error("❌ Login failed. Check your username (remember the 'sc' prefix) and password.")
                 else:
                     st.success("✅ Login successful! Fetching subject list...")
 
-                    menu_response = session.get(MENU_URL, verify=True, timeout=30)
+                    menu_response = session.get(MENU_URL, verify=True, timeout=10)
                     soup_menu = BeautifulSoup(menu_response.text, 'html.parser')
                     forms = soup_menu.find_all('form', id=re.compile(r'^attform-std'))
 
                     if not forms:
-                        st.warning("️ Could not find any subjects.")
+                        st.warning("⚠️ Could not find any subjects.")
                     else:
                         subjects_data = []
                         for form in forms:
@@ -88,13 +87,14 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                                 'course_id': subj['course_id'],
                                 'course': subj['course_param']
                             }
-                            att_response = session.post(ATT_URL, data=att_payload, verify=True, timeout=30)
+                            att_response = session.post(ATT_URL, data=att_payload, verify=True, timeout=10)
                             att_soup = BeautifulSoup(att_response.text, 'html.parser')
 
                             best_percent = "N/A"
                             total_hours = 0
                             present_hours = 0
 
+                            # Find the attendance table
                             all_tables = att_soup.find_all('table')
                             attendance_table = None
 
@@ -109,21 +109,27 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                                     debug_html = str(attendance_table)
 
                                 try:
+                                    # Parse table using Pandas
                                     df_att = pd.read_html(io.StringIO(str(attendance_table)))[0]
                                     df_att = df_att.dropna(how='all')
 
+                                    # Remove footer if it exists
                                     if len(df_att) > 0 and 'total' in str(df_att.iloc[-1, 0]).lower():
                                         df_att = df_att.iloc[:-1]
 
+                                    # Identify columns: Hours is index 2, Status is the last column
                                     hours_col = df_att.columns[2]
                                     status_col = df_att.columns[-1]
 
+                                    # Convert Hours to numeric (handles strings safely)
                                     df_att[hours_col] = pd.to_numeric(df_att[hours_col], errors='coerce').fillna(0)
 
+                                    # Remove header row if Pandas accidentally included it as data
                                     if df_att.iloc[0][hours_col] == 0 and 'hours' in str(
                                             df_att.iloc[0][status_col]).lower():
                                         df_att = df_att.iloc[1:]
 
+                                    # Calculate Hours
                                     total_hours = df_att[hours_col].sum()
                                     present_hours = \
                                     df_att[df_att[status_col].astype(str).str.lower().str.contains('present')][
@@ -133,6 +139,7 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                                         best_percent = f"{(present_hours / total_hours) * 100:.1f}%"
 
                                 except Exception:
+                                    # Fallback: Manual parsing if Pandas fails
                                     rows = attendance_table.find_all('tr')
                                     for row in rows:
                                         cells = row.find_all('td')
@@ -150,7 +157,9 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                                     if total_hours > 0:
                                         best_percent = f"{(present_hours / total_hours) * 100:.1f}%"
 
+                            # --- Calculate Hours you can cut ---
                             if total_hours > 0:
+                                # Formula: x = floor( (Present Hours / 0.80) - Total Hours )
                                 max_cut_hours = (present_hours / 0.80) - total_hours
                                 hours_to_cut = int(math.floor(max_cut_hours))
 
@@ -161,6 +170,7 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                             else:
                                 hours_to_cut = 0
                                 cut_text = "N/A"
+                            # ----------------------------------
 
                             results.append({
                                 'Subject Code': subj['code'],
@@ -174,6 +184,8 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
 
                         if results:
                             df = pd.DataFrame(results)
+
+                            # Clean the Attendance column for charting
                             df['Percentage_Value'] = df['Attendance'].astype(str).str.replace('%', '').str.strip()
                             df['Percentage_Value'] = pd.to_numeric(df['Percentage_Value'], errors='coerce')
 
@@ -181,10 +193,11 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                             st.dataframe(df[['Subject Code', 'Subject Name', 'Attendance', 'Hours Attended',
                                              'Hours you can cut']], use_container_width=True, height=400)
 
-                            with st.expander("🔧 DEBUG: Click here if calculations are wrong"):
+                            with st.expander(" DEBUG: Click here if calculations are wrong"):
                                 st.write("Here is the exact HTML table the code found for your **first subject**:")
                                 st.code(debug_html[:1500] + "...", language="html")
 
+                            # Visualization
                             st.subheader("📈 Attendance Visualization")
                             chart_df = df.dropna(subset=['Percentage_Value']).copy()
                             chart_df = chart_df.set_index('Subject Code')
@@ -192,20 +205,6 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                             if not chart_df.empty:
                                 st.bar_chart(chart_df[['Percentage_Value']])
 
-            # FIX: Catch the specific timeout error and explain it to the user
-            except requests.exceptions.ConnectTimeout:
-                st.error(" **Connection Blocked by University Firewall!**")
-                st.warning("""
-                The University of Ruhuna's server is blocking connections from Streamlit's cloud servers (AWS). 
-                This is a security measure by the university to prevent external scraping.
-
-                **Solutions:**
-                1. Run the app locally on your own computer (where it works perfectly).
-                2. Use a proxy server located in Sri Lanka (requires advanced setup).
-                """)
-            except requests.exceptions.ConnectionError:
-                st.error(
-                    " **Connection Error!** The university server refused the connection. This usually means the server is blocking Streamlit's cloud IP addresses.")
             except requests.exceptions.RequestException as e:
                 st.error(f"🌐 Network error: {str(e)}")
             except Exception as e:
