@@ -4,9 +4,10 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import re
 import io
+import math
 
 st.set_page_config(page_title="TECMIS Attendance Tracker", layout="wide")
-st.title("🎓 TECMIS Attendance Tracker")
+st.title(" TECMIS Attendance Tracker")
 st.info("💡 **Note:** Student usernames require the **'sc'** prefix (e.g., `sc5291`).")
 
 # --- CONFIGURATION ---
@@ -25,7 +26,7 @@ with col1:
 with col2:
     pwd = st.text_input("Password", type="password")
 
-if st.button("🔐 Login & Fetch All Attendance", type="primary"):
+if st.button(" Login & Fetch All Attendance", type="primary"):
     if not user or not pwd:
         st.error("Please enter both username and password.")
     else:
@@ -42,7 +43,7 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                 post_response = session.post(LOGIN_URL, data=payload, verify=True, timeout=10)
 
                 if "Sign In" in post_response.text and 'name="uname"' in post_response.text:
-                    st.error(" Login failed. Check your username (remember the 'sc' prefix) and password.")
+                    st.error("❌ Login failed. Check your username (remember the 'sc' prefix) and password.")
                 else:
                     st.success("✅ Login successful! Fetching subject list...")
 
@@ -76,7 +77,7 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                         st.info(f"Found {len(subjects_data)} subjects. Fetching attendance for each...")
 
                         results = []
-                        debug_html = ""  # Store raw table HTML for debugging
+                        debug_html = ""
                         progress_bar = st.progress(0)
 
                         for i, subj in enumerate(subjects_data):
@@ -90,8 +91,8 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                             att_soup = BeautifulSoup(att_response.text, 'html.parser')
 
                             best_percent = "N/A"
-                            total_classes = 0
-                            present_count = 0
+                            total_hours = 0
+                            present_hours = 0
 
                             # Find the attendance table
                             all_tables = att_soup.find_all('table')
@@ -104,51 +105,79 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                                     break
 
                             if attendance_table:
-                                # Save the first table's HTML for debugging
                                 if i == 0:
                                     debug_html = str(attendance_table)
 
-                                # USE PANDAS TO PARSE THE TABLE (Much more reliable)
                                 try:
-                                    # Convert table HTML to a Pandas DataFrame
+                                    # Parse table using Pandas
                                     df_att = pd.read_html(io.StringIO(str(attendance_table)))[0]
-
-                                    # Drop completely empty rows
                                     df_att = df_att.dropna(how='all')
 
-                                    # If the last row is a "Total" or "Summary" row, remove it
+                                    # Remove footer if it exists
                                     if len(df_att) > 0 and 'total' in str(df_att.iloc[-1, 0]).lower():
                                         df_att = df_att.iloc[:-1]
 
-                                    total_classes = len(df_att)
+                                    # Identify columns: Hours is index 2, Status is the last column
+                                    hours_col = df_att.columns[2]
+                                    status_col = df_att.columns[-1]
 
-                                    if total_classes > 0:
-                                        # The last column is always 'Status'
-                                        status_col = df_att.columns[-1]
+                                    # Convert Hours to numeric (handles strings safely)
+                                    df_att[hours_col] = pd.to_numeric(df_att[hours_col], errors='coerce').fillna(0)
 
-                                        # Count how many times 'Present' appears in the Status column
-                                        present_count = df_att[status_col].astype(str).str.lower().str.contains(
-                                            'present').sum()
+                                    # Remove header row if Pandas accidentally included it as data
+                                    if df_att.iloc[0][hours_col] == 0 and 'hours' in str(
+                                            df_att.iloc[0][status_col]).lower():
+                                        df_att = df_att.iloc[1:]
 
-                                        best_percent = f"{(present_count / total_classes) * 100:.1f}%"
+                                    # Calculate Hours
+                                    total_hours = df_att[hours_col].sum()
+                                    present_hours = \
+                                    df_att[df_att[status_col].astype(str).str.lower().str.contains('present')][
+                                        hours_col].sum()
 
-                                except Exception as e:
-                                    # Fallback if pandas fails
+                                    if total_hours > 0:
+                                        best_percent = f"{(present_hours / total_hours) * 100:.1f}%"
+
+                                except Exception:
+                                    # Fallback: Manual parsing if Pandas fails
                                     rows = attendance_table.find_all('tr')
                                     for row in rows:
                                         cells = row.find_all('td')
                                         if len(cells) == 7:
-                                            total_classes += 1
-                                            if 'present' in cells[6].get_text(strip=True).lower():
-                                                present_count += 1
-                                    if total_classes > 0:
-                                        best_percent = f"{(present_count / total_classes) * 100:.1f}%"
+                                            try:
+                                                hours = int(cells[2].get_text(strip=True))
+                                            except ValueError:
+                                                hours = 0
+                                            status = cells[6].get_text(strip=True).lower()
+
+                                            total_hours += hours
+                                            if 'present' in status:
+                                                present_hours += hours
+
+                                    if total_hours > 0:
+                                        best_percent = f"{(present_hours / total_hours) * 100:.1f}%"
+
+                            # --- Calculate Hours you can cut ---
+                            if total_hours > 0:
+                                # Formula: x = floor( (Present Hours / 0.80) - Total Hours )
+                                max_cut_hours = (present_hours / 0.80) - total_hours
+                                hours_to_cut = int(math.floor(max_cut_hours))
+
+                                if hours_to_cut < 0:
+                                    cut_text = "0 (Below 80%)"
+                                else:
+                                    cut_text = f"{hours_to_cut} hours"
+                            else:
+                                hours_to_cut = 0
+                                cut_text = "N/A"
+                            # ----------------------------------
 
                             results.append({
                                 'Subject Code': subj['code'],
                                 'Subject Name': subj['name'],
                                 'Attendance': best_percent,
-                                'Classes Attended': f"{present_count}/{total_classes}" if total_classes > 0 else "0/0"
+                                'Hours Attended': f"{present_hours}/{total_hours}",
+                                'Hours you can cut': cut_text
                             })
 
                         progress_bar.empty()
@@ -160,16 +189,13 @@ if st.button("🔐 Login & Fetch All Attendance", type="primary"):
                             df['Percentage_Value'] = df['Attendance'].astype(str).str.replace('%', '').str.strip()
                             df['Percentage_Value'] = pd.to_numeric(df['Percentage_Value'], errors='coerce')
 
-                            st.subheader("📊 Your Attendance Summary")
-                            st.dataframe(df[['Subject Code', 'Subject Name', 'Attendance', 'Classes Attended']],
-                                         use_container_width=True, height=400)
+                            st.subheader("📊 Your Attendance Summary (Calculated by Hours)")
+                            st.dataframe(df[['Subject Code', 'Subject Name', 'Attendance', 'Hours Attended',
+                                             'Hours you can cut']], use_container_width=True, height=400)
 
-                            # DEBUG PANEL: If you still see 100% when you shouldn't, open this!
-                            with st.expander("🔧 DEBUG: Click here if calculations are wrong"):
+                            with st.expander(" DEBUG: Click here if calculations are wrong"):
                                 st.write("Here is the exact HTML table the code found for your **first subject**:")
                                 st.code(debug_html[:1500] + "...", language="html")
-                                st.write(
-                                    "👆 **If the calculation is wrong, copy the text above and paste it in the chat so I can see the exact HTML structure!**")
 
                             # Visualization
                             st.subheader("📈 Attendance Visualization")
